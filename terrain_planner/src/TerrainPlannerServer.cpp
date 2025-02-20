@@ -137,6 +137,12 @@ int main(int argc, char* argv[])
             {
                 return crow::response(400, R"({"error":"Could not load the geotiff map."})");
             }
+
+            map_ptr->AddLayerDistanceTransform(50, "distance_surface");
+            map_ptr->AddLayerDistanceTransform(200, "max_elevation");
+            map_ptr->AddLayerHorizontalDistanceTransform(35, "ics_+", "distance_surface");
+            map_ptr->AddLayerHorizontalDistanceTransform(-35, "ics_-", "max_elevation");
+            map_ptr->addLayerSafety("safety", "ics_+", "ics_-");
         }
         catch (const std::exception& e)
         {
