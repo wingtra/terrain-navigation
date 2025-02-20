@@ -10,9 +10,64 @@
 #include "terrain_planner/planner.h"
 #include "terrain_navigation/terrain_map.h"
 
+
+#include <cmath>
+
+
+void GeoConversions_forward(const double lat, const double lon, const double alt, double &y, double &x, double &h) {
+  // 1. Convert the ellipsoidal latitudes φ and longitudes λ into arcseconds ["]
+  const double lat_arc = lat * 3600.0;
+  const double lon_arc = lon * 3600.0;
+
+  // 2. Calculate the auxiliary values (differences of latitude and longitude relative to Bern in the unit [10000"]):
+  //  φ' = (φ – 169028.66 ")/10000
+  //  λ' = (λ – 26782.5 ")/10000
+  const double lat_aux = (lat_arc - 169028.66) / 10000.0;
+  const double lon_aux = (lon_arc - 26782.5) / 10000.0;
+
+  // 3. Calculate projection coordinates in LV95 (E, N, h) or in LV03 (y, x, h)
+  // E [m] = 2600072.37 + 211455.93 * λ' - 10938.51 * λ' * φ' - 0.36 * λ' * φ'2 - 44.54 * λ'3
+  // y [m] = E – 2000000.00 N [m] = 1200147.07 + 308807.95 * φ' + 3745.25 * λ'2 + 76.63 * φ'2 - 194.56 * λ'2 * φ' +
+  // 119.79 * φ'3 x [m] = N – 1000000.00
+  // hCH [m] =hWGS – 49.55 + 2.73 * λ' + 6.94 * φ'
+  const double E = 2600072.37 + 211455.93 * lon_aux - 10938.51 * lon_aux * lat_aux -
+                   0.36 * lon_aux * std::pow(lat_aux, 2) - 44.54 * std::pow(lon_aux, 3);
+  y = E - 2000000.00;
+  const double N = 1200147.07 + 308807.95 * lat_aux + 3745.25 * std::pow(lon_aux, 2) + 76.63 * std::pow(lat_aux, 2) -
+                   194.56 * std::pow(lon_aux, 2) * lat_aux + 119.79 * std::pow(lat_aux, 3);
+  x = N - 1000000.00;
+
+  h = alt - 49.55 + 2.73 * lon_aux + 6.84 * lat_aux;
+};
+
+void GeoConversions_reverse(const double y, const double x, const double h, double &lat, double &lon, double &alt) {
+  // 1. Convert the projection coordinates E (easting) and N (northing) in LV95 (or y / x in LV03) into the civilian
+  // system (Bern = 0 / 0) and express in the unit [1000 km]: E' = (E – 2600000 m)/1000000 = (y – 600000 m)/1000000
+  // N' = (N – 1200000 m)/1000000 = (x – 200000 m)/1000000
+  const double y_aux = (y - 600000.0) / 1000000.0;
+  const double x_aux = (x - 200000.0) / 1000000.0;
+
+  // 2. Calculate longitude λ and latitude φ in the unit [10000"]:
+  //  λ' = 2.6779094 + 4.728982 * y' + 0.791484* y' * x' + 0.1306 * y' * x'2 - 0.0436 * y'3
+  //  φ' = 16.9023892 + 3.238272 * x' - 0.270978 * y'2 - 0.002528 * x'2 - 0.0447 * y'2 * x' - 0.0140 * x'3
+  // hWGS [m] = hCH + 49.55 - 12.60 * y' - 22.64 * x'
+  const double lon_aux = 2.6779094 + 4.728982 * y_aux + 0.791484 * y_aux * x_aux + 0.1306 * y_aux * std::pow(x_aux, 2) -
+                         0.0436 * std::pow(y_aux, 3);
+  const double lat_aux = 16.9023892 + 3.238272 * x_aux - 0.270978 * std::pow(y_aux, 2) - 0.002528 * std::pow(x_aux, 2) -
+                         0.0447 * std::pow(y_aux, 2) * x_aux - 0.0140 * std::pow(x_aux, 3);
+  alt = h + 49.55 - 12.60 * y_aux - 22.64 * x_aux;
+
+  lon = lon_aux * 100.0 / 36.0;
+  lat = lat_aux * 100.0 / 36.0;
+};
+
+
 // A helper to convert a planned path (list of 3D states + yaw) to a JSON array
 static crow::json::wvalue pathToJSON(const std::vector<Eigen::Vector3d>& path_points,
-                                     const std::vector<double>& path_yaws)
+                                     const std::vector<double>& path_yaws,
+                                     const std::vector<double>& path_lats,
+                                     const std::vector<double>& path_lons,
+                                     const std::vector<double>& path_alts)
 {
     // Accumulate each point into a vector of crow::json::wvalue
     std::vector<crow::json::wvalue> arr;
@@ -25,6 +80,9 @@ static crow::json::wvalue pathToJSON(const std::vector<Eigen::Vector3d>& path_po
         pt["y"]   = path_points[i].y();
         pt["z"]   = path_points[i].z();
         pt["yaw"] = (i < path_yaws.size()) ? path_yaws[i] : 0.0;
+        pt["lat"] = (i < path_lats.size()) ? path_lats[i] : 0.0;
+        pt["lon"] = (i < path_lons.size()) ? path_lons[i] : 0.0;
+        pt["alt"] = (i < path_alts.size()) ? path_alts[i] : 0.0;
         arr.push_back(std::move(pt));
     }
     // Construct and return a crow::json::wvalue from that vector
@@ -114,12 +172,13 @@ int main(int argc, char* argv[])
         }
 
         // Extract start pose
+        double start_lat, start_lon, start_alt;
         double start_x, start_y, start_z, start_yaw;
         try
         {
-            start_x   = planner_input["start_pose"]["x"].d();
-            start_y   = planner_input["start_pose"]["y"].d();
-            start_z   = planner_input["start_pose"]["z"].d();
+            start_lat   = planner_input["start_pose"]["x"].d();
+            start_lon   = planner_input["start_pose"]["y"].d();
+            start_alt   = planner_input["start_pose"]["z"].d();
             start_yaw = planner_input["start_pose"]["yaw"].d();
         }
         catch (...)
@@ -127,19 +186,27 @@ int main(int argc, char* argv[])
             return crow::response(400, R"({"error":"Missing or invalid start_pose {x,y,z,yaw}."})");
         }
 
+        GeoConversions_forward(start_lat, start_lon, start_alt, start_x, start_y, start_z);
+        std::cout << "Start position0: " << start_x << ", " << start_y << ", " << start_z << std::endl;
+
         // Extract goal region
+        double goal_lat, goal_lon, goal_alt;
         double goal_x, goal_y, goal_z, goal_radius;
         try
         {
-            goal_x      = planner_input["goal_region"]["x"].d();
-            goal_y      = planner_input["goal_region"]["y"].d();
-            goal_z      = planner_input["goal_region"]["z"].d();
+            goal_lat      = planner_input["goal_region"]["x"].d();
+            goal_lon      = planner_input["goal_region"]["y"].d();
+            goal_alt      = planner_input["goal_region"]["z"].d();
             goal_radius = planner_input["goal_region"]["radius"].d();
         }
         catch (...)
         {
             return crow::response(400, R"({"error":"Missing or invalid goal_region {x,y,z,radius}."})");
         }
+        GeoConversions_forward(goal_lat, goal_lon, goal_alt, goal_x, goal_y, goal_z);
+        std::cout << "Goal position: " << goal_x << ", " << goal_y << ", " << goal_z << std::endl;
+
+        //GeoConversions_reverse(const double y, const double x, const double h, double &lat, double &lon, double &alt)
 
         // Extract planner parameters
         double time_budget = 5.0;
@@ -167,6 +234,8 @@ int main(int argc, char* argv[])
         // ==========================
         auto map_ptr = std::make_shared<TerrainMap>();
         bool success = false;
+        Eigen::Vector3d map_origin;
+
         try
         {
             success = map_ptr->initializeFromGeotiff(map_file);
@@ -182,8 +251,21 @@ int main(int argc, char* argv[])
             map_ptr->addLayerSafety("safety", "ics_+", "ics_-");
 
             ESPG map_coordinate;
-            Eigen::Vector3d map_origin;
             map_ptr->getGlobalOrigin(map_coordinate, map_origin);
+            start_x -= map_origin.x();
+            start_y -= map_origin.y();
+            start_z -= map_origin.z();
+
+            std::cout << "map_origin: " << map_origin.x() << ", " << map_origin.y() << ", " << map_origin.z() << std::endl;
+            std::cout << "Start position: " << start_x << ", " << start_y << ", " << start_z << std::endl;
+
+
+
+            goal_x -= map_origin.x();
+            goal_y -= map_origin.y();
+            goal_z -= map_origin.z();
+            std::cout << "Goal position: " << goal_x << ", " << goal_y << ", " << goal_z << std::endl;
+
             // For ESPG, ensure an operator<< is defined. Otherwise, print its members manually.
             //std::cout << "Map Coordinate: " << map_coordinate << std::endl;
 
@@ -234,9 +316,18 @@ int main(int argc, char* argv[])
 
         // Compute yaws for each segment
         std::vector<double> solutionYaws;
+        std::vector<double> solutionLats;
+        std::vector<double> solutionLons;
+        std::vector<double> solutionAlts;
         solutionYaws.reserve(solutionPath.size());
         for (size_t i = 0; i < solutionPath.size(); i++)
         {
+            double lat, lon, alt;
+            GeoConversions_reverse(solutionPath[i].x() + map_origin.x(), solutionPath[i].y() + map_origin.y(), solutionPath[i].z() + map_origin.z(), lat, lon, alt);
+            solutionLats.push_back(lat);
+            solutionLons.push_back(lon);
+            solutionAlts.push_back(alt);
+
             if (i + 1 < solutionPath.size())
             {
                 double yaw = std::atan2(solutionPath[i+1].y() - solutionPath[i].y(),
@@ -261,7 +352,7 @@ int main(int argc, char* argv[])
 
         if (found && !solutionPath.empty()) {
             // Use move assignment to avoid copying the move-only wvalue
-            crow::json::wvalue path_json = pathToJSON(solutionPath, solutionYaws);
+            crow::json::wvalue path_json = pathToJSON(solutionPath, solutionYaws, solutionLats, solutionLons, solutionAlts);
             out["planner_output"]["path"] = std::move(path_json);
         } else {
             out["planner_output"]["path"] = crow::json::wvalue::list();
