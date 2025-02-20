@@ -41,7 +41,9 @@ find_package(ompl REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(ODE REQUIRED ode)
 
+# -------------------------------------------------------------------------
 # Libraries
+# -------------------------------------------------------------------------
 add_library(${PROJECT_NAME}
   src/common.cpp
   src/DubinsAirplane.cpp
@@ -53,9 +55,9 @@ add_library(${PROJECT_NAME}
 
 target_include_directories(${PROJECT_NAME}
   PUBLIC
-  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-  "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>"
-  ${OMPL_INCLUDE_DIR}
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+    "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>"
+    ${OMPL_INCLUDE_DIR}
 )
 
 target_link_libraries(${PROJECT_NAME} PUBLIC
@@ -66,17 +68,19 @@ target_link_libraries(${PROJECT_NAME} PUBLIC
   tf2_eigen::tf2_eigen
 )
 
-target_compile_options(${PROJECT_NAME} PRIVATE
-  "-Wno-gnu-zero-variadic-macro-arguments"
-)
-
+# Link our library against some of the ROS packages
 ament_target_dependencies(${PROJECT_NAME} PUBLIC
   grid_map_core
   grid_map_geo
   terrain_navigation
+  rclcpp
+  geometry_msgs
+  tf2_geometry_msgs
 )
 
+# -------------------------------------------------------------------------
 # Executables
+# -------------------------------------------------------------------------
 add_executable(test_rrt_node
   src/test_rrt_node.cpp
 )
@@ -146,6 +150,41 @@ target_link_libraries(test_ompl_dubins_to_circle PUBLIC
   tf2_eigen::tf2_eigen
 )
 
+# -------------------------------------------------------------------------
+# TerrainPlannerServer (the new service node)
+# -------------------------------------------------------------------------
+add_executable(terrain_planner_server
+  src/TerrainPlannerServer.cpp  # <-- Your new server implementation
+)
+
+target_compile_options(terrain_planner_server PRIVATE
+  "-Wno-gnu-zero-variadic-macro-arguments"
+)
+
+target_link_directories(terrain_planner_server PUBLIC
+  ${ODE_LIBRARY_DIRS}
+  ${yaml_cpp_vendor_LIBRARY_DIRS}
+)
+
+target_link_libraries(terrain_planner_server
+  PRIVATE
+    ${PROJECT_NAME}
+    ${ODE_LIBRARIES}
+    ${OMPL_LIBRARIES}
+    ${OpenCV_LIBRARIES}
+    ${geometry_msgs_TARGETS}
+    ${tf2_geometry_msgs_TARGETS}
+    tf2_eigen::tf2_eigen
+)
+
+ament_target_dependencies(terrain_planner_server
+  PUBLIC
+    rclcpp
+    geometry_msgs
+    tf2_geometry_msgs
+    # and any other dependencies used in your service code
+)
+
 # Install
 install(
   DIRECTORY include/
@@ -154,7 +193,7 @@ install(
 
 install(
   TARGETS
-  ${PROJECT_NAME}
+    ${PROJECT_NAME}
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -165,9 +204,10 @@ ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 
 install(
   TARGETS
-  test_rrt_node
-  test_ompl_dubins
-  test_ompl_dubins_to_circle
+    test_rrt_node
+    test_ompl_dubins
+    test_ompl_dubins_to_circle
+    terrain_planner_server
   DESTINATION lib/${PROJECT_NAME}
 )
 
