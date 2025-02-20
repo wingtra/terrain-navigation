@@ -5,21 +5,21 @@ curl -X POST -H "Content-Type: application/json" \
       "start_pose": {
         "x": 1570,
         "y": -430,
-        "z": -1,
+        "z": 1645,
         "yaw": 1.5708
       },
       "goal_region": {
         "x": -1429,
         "y": 1000,
-        "z": -1,
-        "radius": 40.0
+        "z": 2580,
+        "radius": 66.67
       },
       "planner_parameters": {
         "time_budget_seconds": 5.0,
         "check_collision_max_altitude": true,
-        "dubins_min_turn_radius": 60.0,
+        "dubins_min_turn_radius": 80.0,
         "dubins_max_climb_angle": 0.15
       }
     }
   }' \
-  localhost:18080/plan
+  http://127.0.0.1:18080/plan

@@ -39,6 +39,39 @@ inline double computeYaw(const Eigen::Vector3d& from, const Eigen::Vector3d& to)
     return std::atan2(dy, dx);
 }
 
+//void lobalOriginCallback(double lat, double lon, double alt) {
+//    std::cout << "[TerrainPlanner] Received Global Origin from FMU" << std::endl;
+//  
+//    // receive geocentric LLA coordinate from mavros/global_position/gp_origin
+//    double geocentric_lat = static_cast<double>(lat);
+//    double geocentric_lon = static_cast<double>(lon);
+//    double geocentric_alt = static_cast<double>(alt);
+//  
+//    // convert to geodetic coordinates with WGS-84 ellipsoid as datum
+//    GeographicLib::Geocentric earth(GeographicLib::Constants::WGS84_a(), GeographicLib::Constants::WGS84_f());
+//    double geodetic_lat, geodetic_lon, geodetic_alt;
+//    earth.Reverse(geocentric_lat, geocentric_lon, geocentric_alt, geodetic_lat, geodetic_lon, geodetic_alt);
+//  
+//    // create local cartesian coordinates (ENU)
+//    enu_.emplace(geodetic_lat, geodetic_lon, geodetic_alt, GeographicLib::Geocentric::WGS84());
+//  
+//    // store the geodetic coordinates (why is this called local origin?)
+//    local_origin_altitude_ = geodetic_alt;
+//    local_origin_latitude_ = geodetic_lat;
+//    local_origin_longitude_ = geodetic_lon;
+//  
+//    std::cout << "Global Origin" << std::endl;
+//    std::cout << "lat: " << local_origin_latitude_ << std::endl;
+//    std::cout << "lon: " << local_origin_longitude_ << std::endl;
+//    std::cout << "alt: " << local_origin_altitude_ << std::endl;
+//}
+
+//std::ostream& operator<<(std::ostream& os, const ESPG& coord) {
+//    // Assuming ESPG has members x, y, z. Adjust as needed.
+//    os << "(" << coord.x << ", " << coord.y << ", " << coord.z << ")";
+//    return os;
+//}
+
 int main(int argc, char* argv[])
 {
     // Create a crow::SimpleApp
@@ -113,6 +146,10 @@ int main(int argc, char* argv[])
         bool check_collision_max_altitude = true;
         double min_turn_radius = 60.0;
         double max_climb_angle = 0.15;
+
+        double local_origin_altitude = -6.35513e+06;
+        double local_origin_latitude = 89.9384;
+        double local_origin_longitude = 11.8799;
         try
         {
             time_budget = planner_input["planner_parameters"]["time_budget_seconds"].d();
@@ -139,10 +176,22 @@ int main(int argc, char* argv[])
             }
 
             map_ptr->AddLayerDistanceTransform(50, "distance_surface");
-            map_ptr->AddLayerDistanceTransform(200, "max_elevation");
-            map_ptr->AddLayerHorizontalDistanceTransform(35, "ics_+", "distance_surface");
-            map_ptr->AddLayerHorizontalDistanceTransform(-35, "ics_-", "max_elevation");
+            map_ptr->AddLayerDistanceTransform(120, "max_elevation");
+            map_ptr->AddLayerHorizontalDistanceTransform(80, "ics_+", "distance_surface");
+            map_ptr->AddLayerHorizontalDistanceTransform(-80, "ics_-", "max_elevation");
             map_ptr->addLayerSafety("safety", "ics_+", "ics_-");
+
+            ESPG map_coordinate;
+            Eigen::Vector3d map_origin;
+            map_ptr->getGlobalOrigin(map_coordinate, map_origin);
+            // For ESPG, ensure an operator<< is defined. Otherwise, print its members manually.
+            //std::cout << "Map Coordinate: " << map_coordinate << std::endl;
+
+            // Eigen vectors have an overloaded << operator.
+            // By default, printing an Eigen::Vector3d will output each element on a separate line.
+            // If you prefer a single-line output, use .transpose():
+            std::cout << "Map Origin: " << map_origin.transpose() << std::endl;
+
         }
         catch (const std::exception& e)
         {
@@ -155,7 +204,7 @@ int main(int argc, char* argv[])
         TerrainOmplRrt planner;
         planner.setMap(map_ptr);
         planner.setMaxAltitudeCollisionChecks(check_collision_max_altitude);
-        planner.setAltitudeLimits(120.0, 50.0);  // Adjust limits as needed
+        planner.setAltitudeLimits(4000.0, 0.0);
         planner.setBoundsFromMap(map_ptr->getGridMap());
 
         planner.getProblemSetup()->getGeometricComponentStateSpace()
@@ -172,7 +221,9 @@ int main(int argc, char* argv[])
 
         // Setup goal region
         Eigen::Vector3d goal_pos(goal_x, goal_y, goal_z);
-        planner.setupProblem(start_pos, start_vel, goal_pos, goal_radius);
+        // planner.setupProblem(start_pos, start_vel, goal_pos, goal_radius);
+        std::cout << "Setting up problem with start: " << start_pos.transpose() << " and goal: " << goal_pos.transpose() <<  goal_radius << std::endl;
+        planner.setupProblem(start_pos, goal_pos, goal_radius);
 
         // ==========================
         // 3. Solve
